@@ -80,6 +80,7 @@ void finalizeParsing(bool);
 #define WEI_TO_ETHER 18
 
 static const uint8_t const TOKEN_TRANSFER_ID[] = { 0xa9, 0x05, 0x9c, 0xbb };
+static const uint8_t const TOKEN_APPROVE_ID[] = { 0x09, 0x5e, 0xa7, 0xb3 };
 
 static const uint8_t const TOKEN_SIGNATURE_PUBLIC_KEY[] = {
 // production key 2019-01-11 03:07PM (erc20signer)
@@ -153,6 +154,12 @@ typedef enum {
   APP_STATE_SIGNING_MESSAGE
 } app_state_t;
 
+typedef enum {
+  TOKEN_OPERATION_NONE,
+  TOKEN_OPERATION_SEND,
+  TOKEN_OPERATION_ALLOW
+} token_operation_t;
+
 
 volatile uint8_t dataAllowed;
 volatile uint8_t contractDetails;
@@ -161,6 +168,7 @@ volatile char addressSummary[32];
 volatile bool dataPresent;
 volatile bool tokenProvisioned;
 volatile bool currentTokenSet;
+volatile token_operation_t tokenOperation;
 
 bagl_element_t tmp_element;
 
@@ -1379,6 +1387,14 @@ UX_FLOW_DEF_NOCB(ux_approval_tx_data_warning_step,
       "Present",
     });
 
+UX_FLOW_DEF_NOCB(ux_approval_tx_allowance_step,
+    pbb,
+    {
+      &C_icon_eye,
+      "Token",
+      "Allowance",
+    });
+
 
 const ux_flow_step_t *        const ux_approval_tx_flow [] = {
   &ux_approval_tx_1_step,
@@ -1400,6 +1416,18 @@ const ux_flow_step_t *        const ux_approval_tx_data_warning_flow [] = {
   &ux_approval_tx_6_step,
   FLOW_END_STEP,
 };
+
+const ux_flow_step_t *        const ux_approval_tx_allowance_flow [] = {
+  &ux_approval_tx_1_step,
+  &ux_approval_tx_allowance_step,
+  &ux_approval_tx_2_step,
+  &ux_approval_tx_3_step,
+  &ux_approval_tx_4_step,
+  &ux_approval_tx_5_step,
+  &ux_approval_tx_6_step,
+  FLOW_END_STEP,
+};
+
 
 //////////////////////////////////////////////////////////////////////
 UX_FLOW_DEF_NOCB(
@@ -2061,8 +2089,18 @@ customStatus_e customProcessor(txContext_t *context) {
             // Initial check to see if the token content can be processed
             tokenProvisioned =
                 (context->currentFieldLength == sizeof(dataContext.tokenContext.data)) &&
-                (os_memcmp(context->workBuffer, TOKEN_TRANSFER_ID, 4) == 0) &&
+                ((os_memcmp(context->workBuffer, TOKEN_TRANSFER_ID, 4) == 0) ||
+                 (os_memcmp(context->workBuffer, TOKEN_APPROVE_ID, 4) == 0)) &&
                 (getKnownToken() != NULL);
+            if (tokenProvisioned) {
+              if (os_memcmp(context->workBuffer, TOKEN_TRANSFER_ID, 4) == 0) {
+                tokenOperation = TOKEN_OPERATION_SEND;
+              }
+              else
+              if (os_memcmp(context->workBuffer, TOKEN_APPROVE_ID, 4) == 0) {
+                tokenOperation = TOKEN_OPERATION_ALLOW;
+              }
+            }
         }
         if (tokenProvisioned) {
             if (context->currentFieldPos < context->currentFieldLength) {
@@ -2269,6 +2307,19 @@ void handleGetPublicKey(uint8_t p1, uint8_t p2, uint8_t *dataBuffer, uint16_t da
 #endif // NO_CONSENT
 }
 
+bool isMaxUint(uint8_t *value, uint32_t length) {
+  uint32_t i;
+  if (length != 32) {
+    return false;
+  }
+  for (i=0; i<length; i++) {
+    if (value[i] != 0xff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 void finalizeParsing(bool direct) {
   uint256_t gasPrice, startGas, uint256;
   uint32_t i;
@@ -2346,13 +2397,18 @@ void finalizeParsing(bool direct) {
     strcpy(strings.common.fullAddress, "Contract");
   }
   // Add amount in ethers or tokens
-  convertUint256BE(tmpContent.txContent.value.value, tmpContent.txContent.value.length, &uint256);
-  tostring256(&uint256, 10, (char *)(G_io_apdu_buffer + 100), 100);
-  i = 0;
-  while (G_io_apdu_buffer[100 + i]) {
-    i++;
+  if ((tokenOperation == TOKEN_OPERATION_ALLOW) && isMaxUint(tmpContent.txContent.value.value, tmpContent.txContent.value.length)) {
+    strcpy(G_io_apdu_buffer, "Unlimited");
   }
-  adjustDecimals((char *)(G_io_apdu_buffer + 100), i, (char *)G_io_apdu_buffer, 100, decimals);
+  else {
+    convertUint256BE(tmpContent.txContent.value.value, tmpContent.txContent.value.length, &uint256);
+    tostring256(&uint256, 10, (char *)(G_io_apdu_buffer + 100), 100);
+    i = 0;
+    while (G_io_apdu_buffer[100 + i]) {
+      i++;
+    }
+    adjustDecimals((char *)(G_io_apdu_buffer + 100), i, (char *)G_io_apdu_buffer, 100, decimals);
+  }
   i = 0;
     tickerOffset = 0;
     while (ticker[tickerOffset]) {
@@ -2394,7 +2450,8 @@ void finalizeParsing(bool direct) {
   ui_approval_transaction_blue_init();
 #elif defined(HAVE_UX_FLOW)
   ux_flow_init(0,
-    ((dataPresent && !N_storage.contractDetails) ? ux_approval_tx_data_warning_flow : ux_approval_tx_flow),
+    ((dataPresent && !N_storage.contractDetails) ? ux_approval_tx_data_warning_flow : 
+      tokenOperation == TOKEN_OPERATION_ALLOW ? ux_approval_tx_allowance_flow : ux_approval_tx_flow),
     NULL);
 #elif defined(TARGET_NANOS)
   ux_step = 0;
@@ -2484,6 +2541,7 @@ void handleSign(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint16_t dataLength
     }
     dataPresent = false;
     tokenProvisioned = false;
+    tokenOperation = TOKEN_OPERATION_NONE;
     initTx(&txContext, &sha3, &tmpContent.txContent, customProcessor, NULL);
   }
   else
