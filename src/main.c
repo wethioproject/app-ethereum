@@ -32,6 +32,11 @@
 #include "glyphs.h"
 #include "utils.h"
 
+#include "swap_lib_calls.h"
+#include "handle_swap_sign_transaction.h"
+#include "handle_get_printable_amount.h"
+#include "handle_check_address.h"
+
 unsigned char G_io_seproxyhal_spi_buffer[IO_SEPROXYHAL_BUFFER_SIZE_B];
 
 unsigned int io_seproxyhal_touch_settings(const bagl_element_t *e);
@@ -48,8 +53,6 @@ void ui_idle(void);
 
 uint32_t set_result_get_publicKey(void);
 void finalizeParsing(bool);
-
-#define MAX_BIP32_PATH 10
 
 #define APP_FLAG_DATA_ALLOWED 0x01
 #define APP_FLAG_EXTERNAL_TOKEN_NEEDED 0x02
@@ -76,8 +79,6 @@ void finalizeParsing(bool);
 #define OFFSET_P2 3
 #define OFFSET_LC 4
 #define OFFSET_CDATA 5
-
-#define WEI_TO_ETHER 18
 
 static const uint8_t const TOKEN_TRANSFER_ID[] = { 0xa9, 0x05, 0x9c, 0xbb };
 
@@ -2230,7 +2231,7 @@ void handleGetPublicKey(uint8_t p1, uint8_t p2, uint8_t *dataBuffer, uint16_t da
   os_memset(&privateKey, 0, sizeof(privateKey));
   os_memset(privateKeyData, 0, sizeof(privateKeyData));
   io_seproxyhal_io_heartbeat();
-  getEthAddressStringFromKey(&tmpCtx.publicKeyContext.publicKey, tmpCtx.publicKeyContext.address, &sha3);
+  getEthAddressStringFromKey(&tmpCtx.publicKeyContext.publicKey, tmpCtx.publicKeyContext.address, &sha3, chainConfig);
 #ifndef NO_CONSENT
   if (p1 == P1_NON_CONFIRM)
 #endif // NO_CONSENT
@@ -2325,7 +2326,7 @@ void finalizeParsing(bool direct) {
     }
   // Add address
   if (tmpContent.txContent.destinationLength != 0) {
-    getEthAddressStringFromBinary(tmpContent.txContent.destination, address, &sha3);
+    getEthAddressStringFromBinary(tmpContent.txContent.destination, address, &sha3, chainConfig);
     /*
     addressSummary[0] = '0';
     addressSummary[1] = 'x';
@@ -2868,64 +2869,9 @@ void app_exit(void) {
     END_TRY_L(exit);
 }
 
-chain_config_t const C_chain_config = {
-  .coinName = CHAINID_COINNAME " ",
-  .chainId = CHAIN_ID,
-  .kind = CHAIN_KIND,
-#ifdef TARGET_BLUE
-  .color_header = COLOR_APP,
-  .color_dashboard = COLOR_APP_LIGHT,
-  .header_text = CHAINID_UPCASE,
-#endif // TARGET_BLUE
-};
-
-__attribute__((section(".boot"))) int main(int arg0) {
-#ifdef USE_LIB_ETHEREUM
-    chain_config_t local_chainConfig;
-    os_memmove(&local_chainConfig, &C_chain_config, sizeof(chain_config_t));
-    unsigned int libcall_params[3];
-    unsigned char coinName[sizeof(CHAINID_COINNAME)];
-    strcpy(coinName, CHAINID_COINNAME);
-#ifdef TARGET_BLUE
-    unsigned char coinNameUP[sizeof(CHAINID_UPCASE)];
-    strcpy(coinNameUP, CHAINID_UPCASE);
-    local_chainConfig.header_text = coinNameUP;
-#endif // TARGET_BLUE
-    local_chainConfig.coinName = coinName;
-    BEGIN_TRY {
-        TRY {
-            // ensure syscall will accept us
-            check_api_level(CX_COMPAT_APILEVEL);
-            // delegate to Ethereum app/lib
-            libcall_params[0] = "Ethereum";
-            libcall_params[1] = 0x100; // use the Init call, as we won't exit
-            libcall_params[2] = &local_chainConfig;
-            os_lib_call(&libcall_params);
-        }
-        FINALLY {
-            app_exit();
-        }
-    }
-    END_TRY;
-#else
-    // exit critical section
-    __asm volatile("cpsie i");
-
-    if (arg0) {
-        if (((unsigned int *)arg0)[0] != 0x100) {
-            os_lib_throw(INVALID_PARAMETER);
-        }
-        chainConfig = (chain_config_t *)((unsigned int *)arg0)[1];
-    }
-    else {
-        chainConfig = (chain_config_t *)PIC(&C_chain_config);
-    }
-
+void coin_main_with_config(chain_config_t *config) {
     reset_app_context();
-
-    // ensure exception will work as planned
-    os_boot();
-
+    chainConfig = config;
     for (;;) {
         UX_INIT();
 
@@ -2934,7 +2880,7 @@ __attribute__((section(".boot"))) int main(int arg0) {
                 io_seproxyhal_init();
 
 #ifdef TARGET_NANOX
-                // grab the current plane mode setting
+                  // grab the current plane mode setting
                 G_io_app.plane_mode = os_setting_get(OS_SETTING_PLANEMODE, NULL, 0);
 #endif // TARGET_NANOX
 
@@ -2958,26 +2904,126 @@ __attribute__((section(".boot"))) int main(int arg0) {
                 BLE_power(1, "Nano X");
 #endif // HAVE_BLE
 
-    #if defined(TARGET_BLUE)
-                // setup the status bar colors (remembered after wards, even more if another app does not resetup after app switch)
+#if defined(TARGET_BLUE)
+                  // setup the status bar colors (remembered after wards, even more if another app does not resetup after app switch)
                 UX_SET_STATUS_BAR_COLOR(0xFFFFFF, chainConfig->color_header);
-    #endif // #if defined(TARGET_BLUE)
+#endif // #if defined(TARGET_BLUE)
 
                 sample_main();
             }
             CATCH(EXCEPTION_IO_RESET) {
-              // reset IO and UX before continuing
-              continue;
+                // reset IO and UX before continuing
+                continue;
             }
             CATCH_ALL {
-              break;
+                break;
             }
             FINALLY {
             }
         }
         END_TRY;
     }
-	  app_exit();
+    app_exit();
+}
+
+void init_coin_config(chain_config_t *coin_config) {
+    os_memset(coin_config, 0, sizeof(chain_config_t));
+    strcpy(coin_config->coinName, CHAINID_COINNAME " ");
+    coin_config->chainId = CHAIN_ID;
+    coin_config->kind = CHAIN_KIND;
+#ifdef TARGET_BLUE
+    coin_config.color_header = COLOR_APP;
+    coin_config.color_dashboard = COLOR_APP_LIGHT;
+    strcpy(coin_config->header_text, CHAINID_UPCASE);
+#endif // TARGET_BLUE
+}
+
+void coin_main() {
+    chain_config_t coin_config;
+    init_coin_config(&coin_config);
+    coin_main_with_config(&coin_config);
+}
+
+void library_main_with_config(chain_config_t *config, unsigned int call_id, unsigned int* call_parameters, unsigned int* return_value) {
+    *return_value = 0;
+    BEGIN_TRY {
+        TRY {
+            PRINTF("Inside a library \n");
+            switch (call_id) {
+                case CHECK_ADDRESS_IN:
+                    handle_check_address((check_address_parameters_t*)call_parameters, config);
+                    *return_value = CHECK_ADDRESS_OUT;
+                break;
+                /*case SIGN_TRANSACTION_IN:
+                    handle_swap_sign_transaction((create_transaction_parameters_t*)call_parameters, config);
+                    *return_value = SIGN_TRANSACTION_OUT;
+                break;*/
+                case GET_PRINTABLE_AMOUNT_IN:
+                    handle_get_printable_amount((get_printable_amount_parameters_t*)call_parameters, config);
+                    *return_value = GET_PRINTABLE_AMOUNT_OUT;
+                break;
+            }
+        }
+        FINALLY {}
+    }
+    END_TRY;
+    os_lib_end();
+    app_exit();
+}
+
+void library_main(unsigned int call_id, unsigned int* call_parameters, unsigned int* return_value) {
+    chain_config_t coin_config;
+    init_coin_config(&coin_config);
+    library_main_with_config(&coin_config, call_id, call_parameters, return_value);
+}
+
+__attribute__((section(".boot"))) int main(int arg0) {
+#ifdef USE_LIB_ETHEREUM
+    unsigned int libcall_params[4];
+    chain_config_t local_chainConfig;
+    init_coin_config(&local_chainConfig);
+    PRINTF("Hello from Eth-clone\n");
+    check_api_level(CX_COMPAT_APILEVEL);
+    // delegate to Ethereum app/lib
+    libcall_params[0] = "Ethereum";
+    libcall_params[2] = &local_chainConfig;
+    if (arg0) {
+        // call as a library
+        libcall_params[1] = ((unsigned int *)arg0)[0] | 0x100;
+        libcall_params[3] = ((unsigned int *)arg0)[1]; // library arguments
+        os_lib_call(&libcall_params);
+        ((unsigned int *)arg0)[0] = libcall_params[1];
+        os_lib_end();
+    }
+    else {
+        // launch coin application
+        libcall_params[1] = 0x100; // use the Init call, as we won't exit
+        os_lib_call(&libcall_params);
+    }
+    // no return
+#else
+    // exit critical section
+    __asm volatile("cpsie i");
+
+    PRINTF("Hello from Ethereum\n");
+    // ensure exception will work as planned
+    os_boot();
+
+    if (!arg0) {
+        coin_main();
+        return 0;
+    }
+    unsigned int call_id = ((unsigned int *)arg0)[0];
+    if (call_id == 0x100) {
+        // *coin application launched from dashboard
+        coin_main_with_config((chain_config_t *)((unsigned int *)arg0)[1]);
+        return 0;
+    }
+    // Called as a library
+    if (call_id & 0x100)
+        library_main_with_config((chain_config_t *)((unsigned int *)arg0)[1], call_id & (~0x100), ((unsigned int *)arg0)[2], &((unsigned int *)arg0)[0]);
+    else
+        library_main(call_id, ((unsigned int *)arg0)[1], &((unsigned int *)arg0)[0]);
 #endif
     return 0;
 }

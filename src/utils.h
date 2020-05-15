@@ -21,6 +21,7 @@
 #include <stdint.h>
 
 #include "uint256.h"
+#include "ethUstream.h"
 
 void array_hexstr(char *strbuf, const void *bin, unsigned int len);
 

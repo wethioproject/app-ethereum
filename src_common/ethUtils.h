@@ -19,8 +19,10 @@
 #define _ETHUTILS_H_
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include "cx.h"
+#include "chainConfig.h"
 
 /**
  * @brief Decode an RLP encoded field - see
@@ -43,12 +45,17 @@ void getEthAddressFromKey(cx_ecfp_public_key_t *publicKey, uint8_t *out,
                                 cx_sha3_t *sha3Context);
 
 void getEthAddressStringFromKey(cx_ecfp_public_key_t *publicKey, uint8_t *out,
-                                cx_sha3_t *sha3Context);
+                                cx_sha3_t *sha3Context, 
+                                chain_config_t* chain_config);
 
 void getEthAddressStringFromBinary(uint8_t *address, uint8_t *out,
-                                   cx_sha3_t *sha3Context);
+                                   cx_sha3_t *sha3Context, 
+                                   chain_config_t* chain_config);
 
 bool adjustDecimals(char *src, uint32_t srcLength, char *target,
                     uint32_t targetLength, uint8_t decimals);
+
+#define WEI_TO_ETHER 18
+#define MAX_BIP32_PATH 10
 
 #endif /* _ETHUTILS_H_ */

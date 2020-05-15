@@ -92,6 +92,7 @@ typedef struct txContext_t {
     ustreamProcess_t customProcessor;
     txContent_t *content;
     void *extra;
+    uint8_t called_from_swap;
 } txContext_t;
 
 void initTx(txContext_t *context, cx_sha3_t *sha3, txContent_t *content,
