@@ -1,5 +1,6 @@
 #include "handle_check_address.h"
 #include "os.h"
+#include "globals.h"
 #include "ethUtils.h"
 #include "string.h"
 

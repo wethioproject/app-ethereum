@@ -1,4 +1,5 @@
 #include "handle_get_printable_amount.h"
+#include "globals.h"
 #include "ethUtils.h"
 #include "utils.h"
 #include "uint256.h"

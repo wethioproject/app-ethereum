@@ -55,7 +55,4 @@ void getEthAddressStringFromBinary(uint8_t *address, uint8_t *out,
 bool adjustDecimals(char *src, uint32_t srcLength, char *target,
                     uint32_t targetLength, uint8_t decimals);
 
-#define WEI_TO_ETHER 18
-#define MAX_BIP32_PATH 10
-
 #endif /* _ETHUTILS_H_ */

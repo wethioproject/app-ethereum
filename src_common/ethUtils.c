@@ -30,9 +30,6 @@
 #include "os.h"
 #include "cx.h"
 #include "ethUtils.h"
-#include "chainConfig.h"
-
-extern chain_config_t *chainConfig;
 
 bool rlpCanDecode(uint8_t *buffer, uint32_t bufferLength, bool *valid) {
     if (*buffer <= 0x7f) {
@@ -156,7 +153,8 @@ char convertDigit(uint8_t *address, uint8_t index, uint8_t *hash) {
 }
 
 void getEthAddressStringFromKey(cx_ecfp_public_key_t *publicKey, uint8_t *out,
-                                cx_sha3_t *sha3Context, UNUSED(chain_config_t* chain_config)) {
+                                cx_sha3_t *sha3Context, chain_config_t* chain_config) {
+    UNUSED(chain_config);
     uint8_t hashAddress[32];
     cx_keccak_init(sha3Context, 256);
     cx_hash((cx_hash_t*)sha3Context, CX_LAST, publicKey->W + 1, 64, hashAddress, 32);
@@ -164,7 +162,8 @@ void getEthAddressStringFromKey(cx_ecfp_public_key_t *publicKey, uint8_t *out,
 }
 
 void getEthAddressStringFromBinary(uint8_t *address, uint8_t *out,
-                                   cx_sha3_t *sha3Context, UNUSED(chain_config_t* chain_config)) {
+                                   cx_sha3_t *sha3Context, chain_config_t* chain_config) {
+    UNUSED(chain_config);
     uint8_t hashChecksum[32];
     uint8_t i;
     cx_keccak_init(sha3Context, 256);

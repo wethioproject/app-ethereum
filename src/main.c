@@ -21,6 +21,7 @@
 
 #include "os.h"
 #include "cx.h"
+#include "globals.h"
 #include "ethUstream.h"
 #include "ethUtils.h"
 #include "uint256.h"
@@ -97,72 +98,15 @@ static const uint8_t const TOKEN_SIGNATURE_PUBLIC_KEY[] = {
   0xd0,0xf8,0x1d,0xaa,0x94,0x97,0x91,0x83
 };
 
-typedef struct tokenContext_t {
-    uint8_t data[4 + 32 + 32];
-    uint32_t dataFieldPos;
-} tokenContext_t;
-
-typedef struct rawDataContext_t {
-    uint8_t data[32];
-    uint8_t fieldIndex;
-    uint8_t fieldOffset;
-} rawDataContext_t;
-
-typedef struct publicKeyContext_t {
-    cx_ecfp_public_key_t publicKey;
-    uint8_t address[41];
-    uint8_t chainCode[32];
-    bool getChaincode;
-} publicKeyContext_t;
-
-typedef struct transactionContext_t {
-    uint8_t pathLength;
-    uint32_t bip32Path[MAX_BIP32_PATH];
-    uint8_t hash[32];
-    tokenDefinition_t currentToken;
-} transactionContext_t;
-
-typedef struct messageSigningContext_t {
-    uint8_t pathLength;
-    uint32_t bip32Path[MAX_BIP32_PATH];
-    uint8_t hash[32];
-    uint32_t remainingLength;
-} messageSigningContext_t;
-
-union {
-    publicKeyContext_t publicKeyContext;
-    transactionContext_t transactionContext;
-    messageSigningContext_t messageSigningContext;
-} tmpCtx;
+dataContext_t dataContext;
+tmpCtx_t tmpCtx;
+display_variables_t strings;
+tmpContent_t tmpContent;
 txContext_t txContext;
-
-union {
-  txContent_t txContent;
-  cx_sha256_t sha2;
-} tmpContent;
+chain_config_t *chainConfig;
+volatile appCtx_t appCtx;
 
 cx_sha3_t sha3;
-
-union {
-    tokenContext_t tokenContext;
-    rawDataContext_t rawDataContext;
-} dataContext;
-
-typedef enum {
-  APP_STATE_IDLE,
-  APP_STATE_SIGNING_TX,
-  APP_STATE_SIGNING_MESSAGE
-} app_state_t;
-
-
-volatile uint8_t dataAllowed;
-volatile uint8_t contractDetails;
-volatile uint8_t appState;
-volatile char addressSummary[32];
-volatile bool dataPresent;
-volatile bool tokenProvisioned;
-volatile bool currentTokenSet;
-
 bagl_element_t tmp_element;
 
 #ifdef HAVE_UX_FLOW
@@ -178,49 +122,18 @@ unsigned int ux_step_count;
 #endif // HAVE_UX_FLOW
 
 
-typedef struct internalStorage_t {
-  unsigned char dataAllowed;
-  unsigned char contractDetails;
-  uint8_t initialized;
-} internalStorage_t;
-
-typedef struct strData_t {
-    char fullAddress[43];
-    char fullAmount[50];
-    char maxFee[50];
-} strData_t;
-
-typedef struct strDataTmp_t {
-    char tmp[100];
-    char tmp2[40];
-} strDataTmp_t;
-
-union {
-    strData_t common;
-    strDataTmp_t tmp;
-} strings;
-
 const internalStorage_t N_storage_real;
-#define N_storage (*(volatile internalStorage_t*) PIC(&N_storage_real))
 
 static const char const CONTRACT_ADDRESS[] = "New contract";
 
 static const char const SIGN_MAGIC[] = "\x19"
                                        "Ethereum Signed Message:\n";
 
-chain_config_t *chainConfig;
 
 const bagl_element_t* ui_menu_item_out_over(const bagl_element_t* e) {
   // the selection rectangle is after the none|touchable
   e = (const bagl_element_t*)(((unsigned int)e)+sizeof(bagl_element_t));
   return e;
-}
-
-void reset_app_context() {
-  appState = APP_STATE_IDLE;
-  currentTokenSet = false;
-  os_memset((uint8_t*)&txContext, 0, sizeof(txContext));
-  os_memset((uint8_t*)&tmpContent, 0, sizeof(tmpContent));
 }
 
 
@@ -299,15 +212,15 @@ const ux_menu_entry_t menu_settings_details[];
 
 // change the setting
 void menu_settings_data_change(unsigned int enabled) {
-  dataAllowed = enabled;
-  nvm_write(&N_storage.dataAllowed, (void*)&dataAllowed, sizeof(uint8_t));
+  appCtx.dataAllowed = enabled;
+  nvm_write(&N_storage.dataAllowed, (void*)&appCtx.dataAllowed, sizeof(uint8_t));
   // go back to the menu entry
   UX_MENU_DISPLAY(0, menu_settings, NULL);
 }
 
 void menu_settings_details_change(unsigned int enabled) {
-  contractDetails = enabled;
-  nvm_write(&N_storage.contractDetails, (void*)&contractDetails, sizeof(uint8_t));
+  appCtx.contractDetails = enabled;
+  nvm_write(&N_storage.contractDetails, (void*)&appCtx.contractDetails, sizeof(uint8_t));
   // go back to the menu entry
   UX_MENU_DISPLAY(0, menu_settings, NULL);
 }
@@ -465,7 +378,7 @@ unsigned int ui_settings_blue_button(unsigned int button_mask, unsigned int butt
 
 
 #if defined(TARGET_BLUE)
-// reuse addressSummary for each line content
+// reuse appCtx.addressSummary for each line content
 const char* ui_details_title;
 const char* ui_details_content;
 typedef void (*callback_t)(void);
@@ -484,24 +397,24 @@ const bagl_element_t ui_details_blue[] = {
   {{BAGL_RECTANGLE                      , 0x00,   0,  20, 320,  48, 0, 0, BAGL_FILL, COLOR_APP, COLOR_APP, 0                                                      , 0   }, NULL, 0, 0, 0, NULL, NULL, NULL},
 
   /// TOP STATUS BAR
-  {{BAGL_LABELINE                       , 0x01,   0,  45, 320,  30, 0, 0, BAGL_FILL, 0xFFFFFF, COLOR_APP, BAGL_FONT_OPEN_SANS_SEMIBOLD_10_13PX|BAGL_FONT_ALIGNMENT_CENTER, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x01,   0,  45, 320,  30, 0, 0, BAGL_FILL, 0xFFFFFF, COLOR_APP, BAGL_FONT_OPEN_SANS_SEMIBOLD_10_13PX|BAGL_FONT_ALIGNMENT_CENTER, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
 
   {{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00,   0,  19,  50,  44, 0, 0, BAGL_FILL, COLOR_APP, COLOR_APP_LIGHT, BAGL_FONT_SYMBOLS_0|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, BAGL_FONT_SYMBOLS_0_LEFT, 0, COLOR_APP, 0xFFFFFF, ui_details_blue_back_callback, NULL, NULL},
   //{{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00, 264,  19,  56,  44, 0, 0, BAGL_FILL, COLOR_APP, COLOR_APP_LIGHT, BAGL_FONT_SYMBOLS_0|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, " " /*BAGL_FONT_SYMBOLS_0_DASHBOARD*/, 0, COLOR_APP, 0xFFFFFF, io_seproxyhal_touch_exit, NULL, NULL},
 
   {{BAGL_LABELINE                       , 0x00,  30, 106, 320,  30, 0, 0, BAGL_FILL, 0x999999, COLOR_BG_1, BAGL_FONT_OPEN_SANS_SEMIBOLD_8_11PX, 0   }, "VALUE", 0, 0, 0, NULL, NULL, NULL},
 
-  {{BAGL_LABELINE                       , 0x10,  30, 136, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x11,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x12,  30, 182, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x13,  30, 205, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x14,  30, 228, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x15,  30, 251, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x16,  30, 274, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x17,  30, 297, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x18,  30, 320, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x10,  30, 136, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x11,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x12,  30, 182, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x13,  30, 205, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x14,  30, 228, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x15,  30, 251, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x16,  30, 274, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x17,  30, 297, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x18,  30, 320, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
   //"..." at the end if too much
-  {{BAGL_LABELINE                       , 0x19,  30, 343, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x19,  30, 343, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
 
   {{BAGL_LABELINE                       , 0x00,   0, 450, 320,  14, 0, 0, 0        , 0x999999, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_8_11PX|BAGL_FONT_ALIGNMENT_CENTER, 0   }, "Review the whole value before continuing.", 10, 0, COLOR_BG_1, NULL, NULL, NULL },
 };
@@ -515,8 +428,8 @@ const bagl_element_t* ui_details_blue_prepro(const bagl_element_t* element) {
   else if(element->component.userid > 0) {
     unsigned int length = strlen(ui_details_content);
     if (length >= (element->component.userid & 0xF) * MAX_CHAR_PER_LINE) {
-      os_memset(addressSummary, 0, MAX_CHAR_PER_LINE+1);
-      os_memmove(addressSummary, ui_details_content+(element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MIN(length - (element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MAX_CHAR_PER_LINE));
+      os_memset(appCtx.addressSummary, 0, MAX_CHAR_PER_LINE+1);
+      os_memmove(appCtx.addressSummary, ui_details_content+(element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MIN(length - (element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MAX_CHAR_PER_LINE));
       return &tmp_element;
     }
     // nothing to draw for this line
@@ -707,7 +620,7 @@ const bagl_element_t* ui_approval_blue_prepro(const bagl_element_t* element) {
           return ui_approval_blue_details_name[G_ui_approval_blue_state][element->component.userid&0xF]!=NULL?&tmp_element:NULL;
 
         case 0x90:
-          return (dataPresent && !N_storage.contractDetails);
+          return (appCtx.dataPresent && !N_storage.contractDetails);
       }
     }
     return &tmp_element;
@@ -733,8 +646,8 @@ const bagl_element_t ui_address_blue[] = {
 
   {{BAGL_LABELINE                       , 0x00,  30, 106, 320,  30, 0, 0, BAGL_FILL, 0x999999, COLOR_BG_1, BAGL_FONT_OPEN_SANS_SEMIBOLD_8_11PX, 0   }, "ACCOUNT", 0, 0, 0, NULL, NULL, NULL},
 
-  {{BAGL_LABELINE                       , 0x10,  30, 136, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x11,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x10,  30, 136, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x11,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
 
   {{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00,  40, 414, 115,  36, 0,18, BAGL_FILL, 0xCCCCCC, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_11_14PX|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, "REJECT", 0, 0xB7B7B7, COLOR_BG_1, io_seproxyhal_touch_address_cancel, NULL, NULL},
   {{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00, 165, 414, 115,  36, 0,18, BAGL_FILL, 0x41ccb4, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_11_14PX|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, "CONFIRM", 0, 0x3ab7a2, COLOR_BG_1, io_seproxyhal_touch_address_ok, NULL, NULL},
@@ -745,8 +658,8 @@ unsigned int ui_address_blue_prepro(const bagl_element_t* element) {
   if(element->component.userid > 0) {
     unsigned int length = strlen(strings.common.fullAddress);
     if (length >= (element->component.userid & 0xF) * MAX_CHAR_PER_LINE) {
-      os_memset(addressSummary, 0, MAX_CHAR_PER_LINE+1);
-      os_memmove(addressSummary, strings.common.fullAddress+(element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MIN(length - (element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MAX_CHAR_PER_LINE));
+      os_memset(appCtx.addressSummary, 0, MAX_CHAR_PER_LINE+1);
+      os_memmove(appCtx.addressSummary, strings.common.fullAddress+(element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MIN(length - (element->component.userid & 0xF) * MAX_CHAR_PER_LINE, MAX_CHAR_PER_LINE));
       return &tmp_element;
     }
     // nothing to draw for this line
@@ -835,7 +748,7 @@ unsigned int ui_approval_prepro(const bagl_element_t* element) {
             UX_CALLBACK_SET_INTERVAL(2000);
             break;
           case 2:
-            if (dataPresent && !N_storage.contractDetails) {
+            if (appCtx.dataPresent && !N_storage.contractDetails) {
               UX_CALLBACK_SET_INTERVAL(3000);
             }
             else {
@@ -924,8 +837,8 @@ unsigned int ui_data_selector_blue_prepro(const bagl_element_t* element) {
     unsigned int offset = (element->component.userid & 0xF) * 24;
     if (length >= offset) {
       unsigned int copyLength = ((offset + 24) > length ? length - offset : 24);
-      os_memset(addressSummary, 0, 25);
-      os_memmove(addressSummary, strings.tmp.tmp + offset, copyLength);
+      os_memset(appCtx.addressSummary, 0, 25);
+      os_memmove(appCtx.addressSummary, strings.tmp.tmp + offset, copyLength);
       return &tmp_element;
     }
     // nothing to draw for this line
@@ -993,10 +906,10 @@ const bagl_element_t ui_data_parameter_blue[] = {
   {{BAGL_LABELINE                       , 0x00,  30, 106, 320,  30, 0, 0, BAGL_FILL, 0x999999, COLOR_BG_1, BAGL_FONT_OPEN_SANS_SEMIBOLD_8_11PX, 0   }, "PARAMETER", 0, 0, 0, NULL, NULL, NULL},
 
   {{BAGL_LABELINE                       , 0x00,  30, 136, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, strings.tmp.tmp2, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x10,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x11,  30, 182, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x12,  30, 205, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
-  {{BAGL_LABELINE                       , 0x13,  30, 228, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x10,  30, 159, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x11,  30, 182, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x12,  30, 205, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
+  {{BAGL_LABELINE                       , 0x13,  30, 228, 260,  30, 0, 0, BAGL_FILL, 0x000000, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_10_13PX, 0   }, appCtx.addressSummary, 0, 0, 0, NULL, NULL, NULL},
 
   {{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00,  40, 414, 115,  36, 0,18, BAGL_FILL, 0xCCCCCC, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_11_14PX|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, "REJECT", 0, 0xB7B7B7, COLOR_BG_1, io_seproxyhal_touch_data_cancel, NULL, NULL},
   {{BAGL_RECTANGLE | BAGL_FLAG_TOUCHABLE, 0x00, 165, 414, 115,  36, 0,18, BAGL_FILL, 0x41ccb4, COLOR_BG_1, BAGL_FONT_OPEN_SANS_REGULAR_11_14PX|BAGL_FONT_ALIGNMENT_CENTER|BAGL_FONT_ALIGNMENT_MIDDLE, 0 }, "CONFIRM", 0, 0x3ab7a2, COLOR_BG_1, io_seproxyhal_touch_data_ok, NULL, NULL},
@@ -1024,8 +937,8 @@ unsigned int ui_data_parameter_blue_prepro(const bagl_element_t* element) {
         endOffset = offset + local_strchr(strings.tmp.tmp + offset, ':');
         copyLength = endOffset - offset;
     }
-    os_memmove(addressSummary, strings.tmp.tmp + offset, copyLength);
-    addressSummary[copyLength] = '\0';
+    os_memmove(appCtx.addressSummary, strings.tmp.tmp + offset, copyLength);
+    appCtx.addressSummary[copyLength] = '\0';
   }
   return &tmp_element;
 }
@@ -1480,7 +1393,7 @@ unsigned int io_seproxyhal_touch_address_ok(const bagl_element_t *e) {
     uint32_t tx = set_result_get_publicKey();
     G_io_apdu_buffer[tx++] = 0x90;
     G_io_apdu_buffer[tx++] = 0x00;
-    reset_app_context();
+    app_context_init();
     // Send back the response, do not restart the event loop
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, tx);
     // Display back the original UX
@@ -1491,7 +1404,7 @@ unsigned int io_seproxyhal_touch_address_ok(const bagl_element_t *e) {
 unsigned int io_seproxyhal_touch_address_cancel(const bagl_element_t *e) {
     G_io_apdu_buffer[0] = 0x69;
     G_io_apdu_buffer[1] = 0x85;
-    reset_app_context();
+    app_context_init();
     // Send back the response, do not restart the event loop
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, 2);
     // Display back the original UX
@@ -1584,7 +1497,7 @@ unsigned int io_seproxyhal_touch_tx_ok(const bagl_element_t *e) {
     tx = 65;
     G_io_apdu_buffer[tx++] = 0x90;
     G_io_apdu_buffer[tx++] = 0x00;
-    reset_app_context();
+    app_context_init();
     // Send back the response, do not restart the event loop
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, tx);
     // Display back the original UX
@@ -1593,7 +1506,7 @@ unsigned int io_seproxyhal_touch_tx_ok(const bagl_element_t *e) {
 }
 
 unsigned int io_seproxyhal_touch_tx_cancel(const bagl_element_t *e) {
-    reset_app_context();
+    app_context_init();
     G_io_apdu_buffer[0] = 0x69;
     G_io_apdu_buffer[1] = 0x85;
     // Send back the response, do not restart the event loop
@@ -1635,7 +1548,7 @@ unsigned int io_seproxyhal_touch_signMessage_ok(const bagl_element_t *e) {
     tx = 65;
     G_io_apdu_buffer[tx++] = 0x90;
     G_io_apdu_buffer[tx++] = 0x00;
-    reset_app_context();
+    app_context_init();
     // Send back the response, do not restart the event loop
     io_exchange(CHANNEL_APDU | IO_RETURN_AFTER_TX, tx);
     // Display back the original UX
@@ -1644,7 +1557,7 @@ unsigned int io_seproxyhal_touch_signMessage_ok(const bagl_element_t *e) {
 }
 
 unsigned int io_seproxyhal_touch_signMessage_cancel(const bagl_element_t *e) {
-    reset_app_context();
+    app_context_init();
     G_io_apdu_buffer[0] = 0x69;
     G_io_apdu_buffer[1] = 0x85;
     // Send back the response, do not restart the event loop
@@ -1667,13 +1580,13 @@ unsigned int io_seproxyhal_touch_data_ok(const bagl_element_t *e) {
         ui_idle();
         break;
     case USTREAM_FAULT:
-        reset_app_context();
+        app_context_init();
         io_seproxyhal_send_status(0x6A80);
         ui_idle();
         break;
     default:
         PRINTF("Unexpected parser status\n");
-        reset_app_context();
+        app_context_init();
         io_seproxyhal_send_status(0x6A80);
         ui_idle();
     }
@@ -1687,7 +1600,7 @@ unsigned int io_seproxyhal_touch_data_ok(const bagl_element_t *e) {
 
 
 unsigned int io_seproxyhal_touch_data_cancel(const bagl_element_t *e) {
-    reset_app_context();
+    app_context_init();
     io_seproxyhal_send_status(0x6985);
     // Display back the original UX
     ui_idle();
@@ -1842,8 +1755,8 @@ uint32_t splitBinaryParameterPart(char *result, uint8_t *parameter) {
 }
 
 tokenDefinition_t* getKnownToken() {
-    tokenDefinition_t *currentToken = NULL;
 #ifdef HAVE_TOKENS_LIST
+    tokenDefinition_t *currentToken = NULL;
     uint32_t numTokens = 0;
     uint32_t i;
     switch(chainConfig->kind) {
@@ -2037,8 +1950,8 @@ tokenDefinition_t* getKnownToken() {
     }
 #endif
 
-    if ((currentTokenSet || tokenProvisioned) && (os_memcmp(tmpCtx.transactionContext.currentToken.address, tmpContent.txContent.destination, 20) == 0)) {
-      currentTokenSet = false;
+    if ((appCtx.currentTokenSet || appCtx.tokenProvisioned) && (os_memcmp(tmpCtx.transactionContext.currentToken.address, tmpContent.txContent.destination, 20) == 0)) {
+      appCtx.currentTokenSet = false;
       return &tmpCtx.transactionContext.currentToken;
     }
 
@@ -2048,7 +1961,7 @@ tokenDefinition_t* getKnownToken() {
 customStatus_e customProcessor(txContext_t *context) {
     if ((context->currentField == TX_RLP_DATA) &&
         (context->currentFieldLength != 0)) {
-        dataPresent = true;
+        appCtx.dataPresent = true;
         // If handling a new contract rather than a function call, abort immediately
         if (tmpContent.txContent.destinationLength == 0) {
             return CUSTOM_NOT_HANDLED;
@@ -2060,12 +1973,12 @@ customStatus_e customProcessor(txContext_t *context) {
                 return CUSTOM_FAULT;
             }
             // Initial check to see if the token content can be processed
-            tokenProvisioned =
+            appCtx.tokenProvisioned =
                 (context->currentFieldLength == sizeof(dataContext.tokenContext.data)) &&
                 (os_memcmp(context->workBuffer, TOKEN_TRANSFER_ID, 4) == 0) &&
                 (getKnownToken() != NULL);
         }
-        if (tokenProvisioned) {
+        if (appCtx.tokenProvisioned) {
             if (context->currentFieldPos < context->currentFieldLength) {
                 uint32_t copySize = (context->commandLength <
                                         ((context->currentFieldLength -
@@ -2206,7 +2119,7 @@ void handleGetPublicKey(uint8_t p1, uint8_t p2, uint8_t *dataBuffer, uint16_t da
   uint32_t i;
   uint8_t bip32PathLength = *(dataBuffer++);
   cx_ecfp_private_key_t privateKey;
-  reset_app_context();
+  app_context_init();
   if ((bip32PathLength < 0x01) ||
       (bip32PathLength > MAX_BIP32_PATH)) {
     PRINTF("Invalid path\n");
@@ -2243,12 +2156,12 @@ void handleGetPublicKey(uint8_t p1, uint8_t p2, uint8_t *dataBuffer, uint16_t da
   else
   {
     /*
-    addressSummary[0] = '0';
-    addressSummary[1] = 'x';
-    os_memmove((unsigned char *)(addressSummary + 2), tmpCtx.publicKeyContext.address, 4);
-    os_memmove((unsigned char *)(addressSummary + 6), "...", 3);
-    os_memmove((unsigned char *)(addressSummary + 9), tmpCtx.publicKeyContext.address + 40 - 4, 4);
-    addressSummary[13] = '\0';
+    appCtx.addressSummary[0] = '0';
+    appCtx.addressSummary[1] = 'x';
+    os_memmove((unsigned char *)(appCtx.addressSummary + 2), tmpCtx.publicKeyContext.address, 4);
+    os_memmove((unsigned char *)(appCtx.addressSummary + 6), "...", 3);
+    os_memmove((unsigned char *)(appCtx.addressSummary + 9), tmpCtx.publicKeyContext.address + 40 - 4, 4);
+    appCtx.addressSummary[13] = '\0';
     */
 
     // prepare for a UI based reply
@@ -2283,7 +2196,7 @@ void finalizeParsing(bool direct) {
   if (chainConfig->chainId != 0) {
     uint32_t v = getV(&tmpContent.txContent);
     if (chainConfig->chainId != v) {
-        reset_app_context();
+        app_context_init();
         PRINTF("Invalid chainId %d expected %d\n", v, chainConfig->chainId);
         if (direct) {
             THROW(0x6A80);
@@ -2298,10 +2211,10 @@ void finalizeParsing(bool direct) {
   // Store the hash
   cx_hash((cx_hash_t *)&sha3, CX_LAST, tmpCtx.transactionContext.hash, 0, tmpCtx.transactionContext.hash, 32);
     // If there is a token to process, check if it is well known
-    if (tokenProvisioned) {
+    if (appCtx.tokenProvisioned) {
         tokenDefinition_t *currentToken = getKnownToken();
         if (currentToken != NULL) {
-            dataPresent = false;
+            appCtx.dataPresent = false;
             decimals = currentToken->decimals;
             ticker = currentToken->ticker;
             tmpContent.txContent.destinationLength = 20;
@@ -2311,8 +2224,8 @@ void finalizeParsing(bool direct) {
         }
     }
     else {
-      if (dataPresent && !N_storage.dataAllowed) {
-          reset_app_context();
+      if (appCtx.dataPresent && !N_storage.dataAllowed) {
+          app_context_init();
           PRINTF("Data field forbidden\n");
           if (direct) {
             THROW(0x6A80);
@@ -2328,12 +2241,12 @@ void finalizeParsing(bool direct) {
   if (tmpContent.txContent.destinationLength != 0) {
     getEthAddressStringFromBinary(tmpContent.txContent.destination, address, &sha3, chainConfig);
     /*
-    addressSummary[0] = '0';
-    addressSummary[1] = 'x';
-    os_memmove((unsigned char *)(addressSummary + 2), address, 4);
-    os_memmove((unsigned char *)(addressSummary + 6), "...", 3);
-    os_memmove((unsigned char *)(addressSummary + 9), address + 40 - 4, 4);
-    addressSummary[13] = '\0';
+    appCtx.addressSummary[0] = '0';
+    appCtx.addressSummary[1] = 'x';
+    os_memmove((unsigned char *)(appCtx.addressSummary + 2), address, 4);
+    os_memmove((unsigned char *)(appCtx.addressSummary + 6), "...", 3);
+    os_memmove((unsigned char *)(appCtx.addressSummary + 9), address + 40 - 4, 4);
+    appCtx.addressSummary[13] = '\0';
     */
 
     strings.common.fullAddress[0] = '0';
@@ -2343,7 +2256,7 @@ void finalizeParsing(bool direct) {
   }
   else
   {
-    os_memmove((void*)addressSummary, CONTRACT_ADDRESS, sizeof(CONTRACT_ADDRESS));
+    os_memmove((void*)appCtx.addressSummary, CONTRACT_ADDRESS, sizeof(CONTRACT_ADDRESS));
     strcpy(strings.common.fullAddress, "Contract");
   }
   // Add amount in ethers or tokens
@@ -2395,7 +2308,7 @@ void finalizeParsing(bool direct) {
   ui_approval_transaction_blue_init();
 #elif defined(HAVE_UX_FLOW)
   ux_flow_init(0,
-    ((dataPresent && !N_storage.contractDetails) ? ux_approval_tx_data_warning_flow : ux_approval_tx_flow),
+    ((appCtx.dataPresent && !N_storage.contractDetails) ? ux_approval_tx_data_warning_flow : ux_approval_tx_flow),
     NULL);
 #elif defined(TARGET_NANOS)
   ux_step = 0;
@@ -2449,7 +2362,7 @@ void handleProvideErc20TokenInformation(uint8_t p1, uint8_t p2, uint8_t *workBuf
     PRINTF("Invalid token signature\n");
     THROW(0x6A80);
   }
-  currentTokenSet = true;
+  appCtx.currentTokenSet = true;
   THROW(0x9000);
 }
 
@@ -2462,10 +2375,10 @@ void handleSign(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint16_t dataLength
       PRINTF("Invalid data\n");
       THROW(0x6a80);
     }    
-    if (appState != APP_STATE_IDLE) {
-      reset_app_context();
+    if (appCtx.appState != APP_STATE_IDLE) {
+      app_context_init();
     }
-    appState = APP_STATE_SIGNING_TX;    
+    appCtx.appState = APP_STATE_SIGNING_TX;    
     tmpCtx.transactionContext.pathLength = workBuffer[0];
     if ((tmpCtx.transactionContext.pathLength < 0x01) ||
         (tmpCtx.transactionContext.pathLength > MAX_BIP32_PATH)) {
@@ -2483,8 +2396,8 @@ void handleSign(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint16_t dataLength
       workBuffer += 4;
       dataLength -= 4;
     }
-    dataPresent = false;
-    tokenProvisioned = false;
+    appCtx.dataPresent = false;
+    appCtx.tokenProvisioned = false;
     initTx(&txContext, &sha3, &tmpContent.txContent, customProcessor, NULL);
   }
   else
@@ -2494,7 +2407,7 @@ void handleSign(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint16_t dataLength
   if (p2 != 0) {
     THROW(0x6B00);
   }
-  if ((p1 == P1_MORE) && (appState != APP_STATE_SIGNING_TX)) {
+  if ((p1 == P1_MORE) && (appCtx.appState != APP_STATE_SIGNING_TX)) {
     PRINTF("Signature not initialized\n");
     THROW(0x6985);
   }
@@ -2554,10 +2467,10 @@ void handleSignPersonalMessage(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint
       PRINTF("Invalid data\n");
       THROW(0x6a80);
     }
-    if (appState != APP_STATE_IDLE) {
-      reset_app_context();
+    if (appCtx.appState != APP_STATE_IDLE) {
+      app_context_init();
     }
-    appState = APP_STATE_SIGNING_MESSAGE;    
+    appCtx.appState = APP_STATE_SIGNING_MESSAGE;    
     tmpCtx.messageSigningContext.pathLength = workBuffer[0];
     if ((tmpCtx.messageSigningContext.pathLength < 0x01) ||
         (tmpCtx.messageSigningContext.pathLength > MAX_BIP32_PATH)) {
@@ -2601,7 +2514,7 @@ void handleSignPersonalMessage(uint8_t p1, uint8_t p2, uint8_t *workBuffer, uint
   if (p2 != 0) {
     THROW(0x6B00);
   }
-  if ((p1 == P1_MORE) && (appState != APP_STATE_SIGNING_MESSAGE)) {
+  if ((p1 == P1_MORE) && (appCtx.appState != APP_STATE_SIGNING_MESSAGE)) {
     PRINTF("Signature not initialized\n");
     THROW(0x6985);
   }
@@ -2665,12 +2578,12 @@ void handleApdu(volatile unsigned int *flags, volatile unsigned int *tx) {
 
       switch (G_io_apdu_buffer[OFFSET_INS]) {
         case INS_GET_PUBLIC_KEY:
-          currentTokenSet = false;
+          appCtx.currentTokenSet = false;
           handleGetPublicKey(G_io_apdu_buffer[OFFSET_P1], G_io_apdu_buffer[OFFSET_P2], G_io_apdu_buffer + OFFSET_CDATA, G_io_apdu_buffer[OFFSET_LC], flags, tx);
           break;
 
         case INS_PROVIDE_ERC20_TOKEN_INFORMATION:
-          currentTokenSet = false;
+          appCtx.currentTokenSet = false;
           handleProvideErc20TokenInformation(G_io_apdu_buffer[OFFSET_P1], G_io_apdu_buffer[OFFSET_P2], G_io_apdu_buffer + OFFSET_CDATA, G_io_apdu_buffer[OFFSET_LC], flags, tx);
           break;
 
@@ -2683,7 +2596,7 @@ void handleApdu(volatile unsigned int *flags, volatile unsigned int *tx) {
           break;
 
         case INS_SIGN_PERSONAL_MESSAGE:
-          currentTokenSet = false;
+          appCtx.currentTokenSet = false;
           handleSignPersonalMessage(G_io_apdu_buffer[OFFSET_P1], G_io_apdu_buffer[OFFSET_P2], G_io_apdu_buffer + OFFSET_CDATA, G_io_apdu_buffer[OFFSET_LC], flags, tx);
           break;
 
@@ -2705,7 +2618,7 @@ void handleApdu(volatile unsigned int *flags, volatile unsigned int *tx) {
         case 0x6000:
           // Wipe the transaction context and report the exception
           sw = e;
-          reset_app_context();
+          app_context_init();
           break;
         case 0x9000:
           // All is well
@@ -2714,7 +2627,7 @@ void handleApdu(volatile unsigned int *flags, volatile unsigned int *tx) {
         default:
           // Internal error
           sw = 0x6800 | (e & 0x7FF);
-          reset_app_context();
+          app_context_init();
           break;
         }
         // Unexpected exception => report
@@ -2728,7 +2641,7 @@ void handleApdu(volatile unsigned int *flags, volatile unsigned int *tx) {
   END_TRY;
 }
 
-void sample_main(void) {
+void app_main(void) {
     volatile unsigned int rx = 0;
     volatile unsigned int tx = 0;
     volatile unsigned int flags = 0;
@@ -2768,7 +2681,7 @@ void sample_main(void) {
                 case 0x6000:
                     // Wipe the transaction context and report the exception
                     sw = e;
-                    reset_app_context();
+                    app_context_init();
                     break;
                 case 0x9000:
                     // All is well
@@ -2777,7 +2690,7 @@ void sample_main(void) {
                 default:
                     // Internal error
                     sw = 0x6800 | (e & 0x7FF);
-                    reset_app_context();
+                    app_context_init();
                     break;
                 }
                 if (e != 0x9000) {
@@ -2870,7 +2783,7 @@ void app_exit(void) {
 }
 
 void coin_main_with_config(chain_config_t *config) {
-    reset_app_context();
+    
     chainConfig = config;
     for (;;) {
         UX_INIT();
@@ -2884,15 +2797,7 @@ void coin_main_with_config(chain_config_t *config) {
                 G_io_app.plane_mode = os_setting_get(OS_SETTING_PLANEMODE, NULL, 0);
 #endif // TARGET_NANOX
 
-                if (N_storage.initialized != 0x01) {
-                  internalStorage_t storage;
-                  storage.dataAllowed = 0x00;
-                  storage.contractDetails = 0x00;
-                  storage.initialized = 0x01;
-                  nvm_write(&N_storage, (void*)&storage, sizeof(internalStorage_t));
-                }
-                dataAllowed = N_storage.dataAllowed;
-                contractDetails = N_storage.contractDetails;
+                app_context_init();
 
                 USB_power(0);
                 USB_power(1);
@@ -2909,7 +2814,7 @@ void coin_main_with_config(chain_config_t *config) {
                 UX_SET_STATUS_BAR_COLOR(0xFFFFFF, chainConfig->color_header);
 #endif // #if defined(TARGET_BLUE)
 
-                sample_main();
+                app_main();
             }
             CATCH(EXCEPTION_IO_RESET) {
                 // reset IO and UX before continuing
@@ -2954,10 +2859,10 @@ void library_main_with_config(chain_config_t *config, unsigned int call_id, unsi
                     handle_check_address((check_address_parameters_t*)call_parameters, config);
                     *return_value = CHECK_ADDRESS_OUT;
                 break;
-                /*case SIGN_TRANSACTION_IN:
+                case SIGN_TRANSACTION_IN:
                     handle_swap_sign_transaction((create_transaction_parameters_t*)call_parameters, config);
                     *return_value = SIGN_TRANSACTION_OUT;
-                break;*/
+                break;
                 case GET_PRINTABLE_AMOUNT_IN:
                     handle_get_printable_amount((get_printable_amount_parameters_t*)call_parameters, config);
                     *return_value = GET_PRINTABLE_AMOUNT_OUT;
