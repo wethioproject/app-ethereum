@@ -1,32 +1,18 @@
 #include "shared_context.h"
 #include "ui_callbacks.h"
+#include "eth_crypto.h"
 
 unsigned int io_seproxyhal_touch_signMessage_ok(const bagl_element_t *e) {
-    uint8_t privateKeyData[32];
     uint8_t signature[100];
-    uint8_t signatureLength;
-    cx_ecfp_private_key_t privateKey;
     uint32_t tx = 0;
-    io_seproxyhal_io_heartbeat();
-    os_perso_derive_node_bip32(
-        CX_CURVE_256K1, tmpCtx.messageSigningContext.bip32Path,
-        tmpCtx.messageSigningContext.pathLength, privateKeyData, NULL);
-    io_seproxyhal_io_heartbeat();
-    cx_ecfp_init_private_key(CX_CURVE_256K1, privateKeyData, 32, &privateKey);
-    os_memset(privateKeyData, 0, sizeof(privateKeyData));
-    unsigned int info = 0;
-    io_seproxyhal_io_heartbeat();
-    signatureLength =
-        cx_ecdsa_sign(&privateKey, CX_RND_RFC6979 | CX_LAST, CX_SHA256,
-                      tmpCtx.messageSigningContext.hash,
-                      sizeof(tmpCtx.messageSigningContext.hash), signature, sizeof(signature), &info);
-    os_memset(&privateKey, 0, sizeof(privateKey));
+    uint8_t parity = 0;
+    eth_sign(tmpCtx.messageSigningContext.bip32Path, tmpCtx.messageSigningContext.pathLength, 
+        tmpCtx.messageSigningContext.hash,
+        signature, sizeof(signature),
+        &parity);    
     G_io_apdu_buffer[0] = 27;
-    if (info & CX_ECCINFO_PARITY_ODD) {
+    if (parity) {
       G_io_apdu_buffer[0]++;
-    }
-    if (info & CX_ECCINFO_xGTn) {
-      G_io_apdu_buffer[0] += 2;
     }
     format_signature_out(signature);
     tx = 65;
