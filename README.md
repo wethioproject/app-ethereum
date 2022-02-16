@@ -1,5 +1,5 @@
 # app-ethereum
-Ethereum wallet application framework for Nano S and Nano X.
+Ethereum's wallet application framework for Nano S and Nano X.
 Ledger Blue is not maintained anymore, but the app can still be compiled for this target using the branch `blue-final-release`.
 
 This app follows the specification available in the `doc/` folder.
